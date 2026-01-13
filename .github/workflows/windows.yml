@@ -69,7 +69,16 @@ jobs:
         $response = Invoke-RestMethod -Uri "https://www.googleapis.com/oauth2/v4/token" -Body $body -Method POST
         Write-Output "::add-mask::$($response.access_token)"
         Add-Content -Path $env:GITHUB_ENV -Value "ACCESS_TOKEN=$($response.access_token)"
-    
+
+    - name: Restore Godot Cache
+      if: env.hashes_are_same == 'false'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~\AppData\Roaming\Godot\
+          ~\AppData\Local\Godot\
+        key: godot-${{ env.GODOT_VERSION }}-windows
+        
     - name: Setup Godot
       if: env.hashes_are_same == 'false'
       uses: chickensoft-games/setup-godot@v2
@@ -100,7 +109,7 @@ jobs:
     - name: Zip it and Upload Google Drive
       if: env.hashes_are_same == 'false'
       run: |
-        Compress-Archive -Path ${{ inputs.branch }}/export/release/windows/bin -DestinationPath ArtCrushV2.zip -Update
+        Compress-Archive -Path Crushed/build/windows/* -DestinationPath ArtCrushV2.zip -Update
         $headers = @{
           "Authorization" = "Bearer ${{ env.ACCESS_TOKEN }}"
           "Content-Type" = "multipart/related; boundary=boundary"
