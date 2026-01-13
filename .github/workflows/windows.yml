@@ -82,8 +82,10 @@ jobs:
       if: env.hashes_are_same == 'false'
       run: |
         cd Crushed
-        mkdir -p build/windows
-        godot --headless --export-release "Windows Desktop" build/windows/${{ env.EXPORT_NAME }}.exe
+        New-Item -ItemType Directory -Force -Path ".export/windows"
+        godot --headless --export-release "Windows Desktop"
+        Write-Output "Checking build output in .export/windows..."
+        Get-ChildItem -Path ".export/windows"
         cd ..
     
     - name: Check latest Build file and get FileID
@@ -99,12 +101,18 @@ jobs:
 
     - name: Zip it and Upload Google Drive
       if: env.hashes_are_same == 'false'
+      shell: pwsh
       run: |
         $rootPath = Get-Location
         $zipPath = Join-Path $rootPath "ArtCrushV2.zip"
-        $sourcePath = Join-Path $rootPath "Crushed/build/windows/*"
-        Write-Output "Zipping from $sourcePath to $zipPath"
-        Compress-Archive -Path $sourcePath -DestinationPath $zipPath -Force
+        $sourceDir = Join-Path $rootPath "Crushed/.export/windows"
+        
+        if (-not (Test-Path "$sourceDir\FobiEngine.exe")) {
+            Write-Error "FobiEngine.exe not found in $sourceDir"
+            exit 1
+        }
+        
+        Compress-Archive -Path "$sourceDir\*" -DestinationPath $zipPath -Force
         $retryCount = 0
         while (-not (Test-Path $zipPath) -and $retryCount -lt 5) {
             Start-Sleep -Seconds 1
