@@ -100,16 +100,29 @@ jobs:
     - name: Zip it and Upload Google Drive
       if: env.hashes_are_same == 'false'
       run: |
-        Compress-Archive -Path Crushed/build/windows/* -DestinationPath ArtCrushV2.zip -Update
+        $rootPath = Get-Location
+        $zipPath = Join-Path $rootPath "ArtCrushV2.zip"
+        $sourcePath = Join-Path $rootPath "Crushed/build/windows/*"
+        Write-Output "Zipping from $sourcePath to $zipPath"
+        Compress-Archive -Path $sourcePath -DestinationPath $zipPath -Force
+        $retryCount = 0
+        while (-not (Test-Path $zipPath) -and $retryCount -lt 5) {
+            Start-Sleep -Seconds 1
+            $retryCount++
+        }
+
+        if (-not (Test-Path $zipPath)) {
+            Write-Error "Zip file was not created at $zipPath"
+            exit 1
+        }
+        
         $headers = @{
           "Authorization" = "Bearer ${{ env.ACCESS_TOKEN }}"
           "Content-Type" = "multipart/related; boundary=boundary"
         }
-        $metadata = @{
-          name="ArtCrushV2.zip"
-        } | ConvertTo-Json
         
-        $fileBytes = [System.IO.File]::ReadAllBytes("ArtCrushV2.zip")
+        $metadata = @{ name="ArtCrushV2.zip" } | ConvertTo-Json
+        $fileBytes = [System.IO.File]::ReadAllBytes($zipPath)
         $body = @(
           "--boundary",
           "Content-Type: application/json; charset=UTF-8",
