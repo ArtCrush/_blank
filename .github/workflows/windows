@@ -1,0 +1,191 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: '빌드할 브랜치 이름'
+        required: true
+        default: 'main'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  WindowsBuild:
+    runs-on: windows-2022
+    env:
+      GODOT_VERSION: 4.5.1
+      EXPORT_NAME: ArtCrush
+      PROJECT_PATH: .
+    steps:
+    - uses: actions/checkout@v4.1.7
+        
+    - name: Get latest commit and check hash
+      run: |
+        $jsonFilePath = "latest_commits.json"
+        $branchName = "${{ inputs.branch }}"
+        $cloneDir = "Crushed"
+        
+        git clone https://${{ secrets.ASE_GITHUB_TOKEN }}@github.com/${{ secrets.MY_REPO_URL }} $cloneDir --depth=1 --branch $branchName
+        cd $cloneDir
+        $latest_commit = (git log -1 --pretty=format:"%H").Trim()
+        cd ..
+        
+        Write-Output "Latest commit hash for $branchName is $latest_commit"
+        Add-Content -Path $env:GITHUB_ENV -Value "LATEST_COMMIT_HASH=$latest_commit"
+
+        $hashesHashtable = @{}
+        if (Test-Path $jsonFilePath) {
+            try {
+                $jsonContent = Get-Content $jsonFilePath -Raw
+                if ($jsonContent.Trim()) {
+                    $hashesHashtable = $jsonContent | ConvertFrom-Json -AsHashtable
+                }
+            } catch {
+                 Write-Warning "Could not parse $jsonFilePath. Re-initializing."
+                 $hashesHashtable = @{}
+            }
+        }
+        
+        if ($hashesHashtable.ContainsKey($branchName) -and ($latest_commit -eq $hashesHashtable[$branchName])) {
+            Write-Output "Hashes are the same for branch $branchName"
+            Add-Content -Path $env:GITHUB_ENV -Value "hashes_are_same=true"
+        } else {
+            Write-Output "Hashes are different. New: $latest_commit"
+            Add-Content -Path $env:GITHUB_ENV -Value "hashes_are_same=false"
+        }
+
+    - name: Get Access Token using Refresh Token
+      if: env.hashes_are_same == 'false'
+      run: |
+        $body = @{
+            "client_id" = "${{ secrets.CLIENT_ID }}"
+            "client_secret" = "${{ secrets.CLIENT_SECRET }}"
+            "refresh_token" = "${{ secrets.REFRESH_TOKEN }}"
+            "grant_type" = "refresh_token"
+        }
+        $response = Invoke-RestMethod -Uri "https://www.googleapis.com/oauth2/v4/token" -Body $body -Method POST
+        Write-Output "::add-mask::$($response.access_token)"
+        Add-Content -Path $env:GITHUB_ENV -Value "ACCESS_TOKEN=$($response.access_token)"
+    
+    - name: Setup Godot
+      if: env.hashes_are_same == 'false'
+      uses: chickensoft-games/setup-godot@v2
+      with:
+        version: ${{ env.GODOT_VERSION }}
+        use-dotnet: false
+        include-templates: true
+
+    - name: Godot Build (Windows)
+      if: env.hashes_are_same == 'false'
+      run: |
+        cd Crushed
+        mkdir -p build/windows
+        godot --headless --export-release "Windows Desktop" build/windows/${{ env.EXPORT_NAME }}.exe
+        cd ..
+    
+    - name: Check latest Build file and get FileID
+      if: env.hashes_are_same == 'false'
+      run: |
+        $headers = @{ "Authorization" = "Bearer ${{ env.ACCESS_TOKEN }}" }
+        $response = Invoke-RestMethod -Uri "https://www.googleapis.com/drive/v3/files" -Method Get -Headers $headers
+        $ArtCrushFile = $response.files | Where-Object { $_.name -eq "ArtCrushV2.zip" } | Select-Object -First 1
+        if ($ArtCrushFile) {
+          Write-Output "::add-mask::$($ArtCrushFile.id)"
+          Add-Content -Path $env:GITHUB_ENV -Value "UPLOADED_FILEID=$($ArtCrushFile.id)"
+        }
+
+    - name: Zip it and Upload Google Drive
+      if: env.hashes_are_same == 'false'
+      run: |
+        Compress-Archive -Path ${{ inputs.branch }}/export/release/windows/bin -DestinationPath ArtCrushV2.zip -Update
+        $headers = @{
+          "Authorization" = "Bearer ${{ env.ACCESS_TOKEN }}"
+          "Content-Type" = "multipart/related; boundary=boundary"
+        }
+        $metadata = @{
+          name="ArtCrushV2.zip"
+        } | ConvertTo-Json
+        
+        $fileBytes = [System.IO.File]::ReadAllBytes("ArtCrushV2.zip");
+        $body = @(
+          "--boundary",
+          "Content-Type: application/json; charset=UTF-8",
+          "",
+          $metadata,
+          "--boundary",
+          "Content-Type: application/octet-stream",
+          "Content-Transfer-Encoding: base64",
+          "",
+          [Convert]::ToBase64String($fileBytes),
+          "--boundary--"
+        ) -join "`r`n"
+        $fileId = "${{ env.UPLOADED_FILEID }}"
+        $uri = if ($fileId) {
+          "https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart"
+        } else {
+          "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
+        }
+        $method = if ($fileId) { "PATCH" } else { "POST" }
+        
+        $response = Invoke-RestMethod -Method $method -Headers $headers -Uri $uri -Body $body
+
+        $permission_body = @{
+          role = "reader"
+          type = "anyone"
+        } | ConvertTo-Json
+
+        Invoke-RestMethod -Method POST -Headers @{"Authorization"="Bearer ${{ env.ACCESS_TOKEN }}"} -Uri "https://www.googleapis.com/drive/v3/files/$($response.id)/permissions" -Body $permission_body -ContentType "application/json" | Out-Null
+        if (-not $fileId) {
+          Write-Output "::add-mask::$($response.id)"
+          Add-Content -Path $env:GITHUB_ENV -Value "UPLOADED_FILEID=$($response.id)"
+        }
+
+    - name: Send Discord Webhook
+      if: env.hashes_are_same == 'false'
+      run: |
+        $body = @{
+          content = "[V2 바로가기](<https://drive.google.com/file/d/${{ env.UPLOADED_FILEID }}/view?usp=sharing>)"
+          embeds = @(
+            @{
+              id = 652627557
+              title = "New Version Updated."
+              description = "File Update!"
+              color = 4067891
+            }
+          )
+        } | ConvertTo-Json
+        Invoke-RestMethod -Method POST -Headers @{"Content-Type"= "application/json"} -Uri ${{ secrets.WEBHOOK_URL }} -Body $body | Out-Null
+
+    - name: Update latest_commits.json in current repository
+      if: env.hashes_are_same == 'false'
+      run: |
+        $jsonFilePath = "latest_commits.json"
+        $branchName = "${{ inputs.branch }}"
+        $latest_commit = "${{ env.LATEST_COMMIT_HASH }}"
+
+        $hashesHashtable = @{}
+        if (Test-Path $jsonFilePath) {
+            try {
+                $jsonContent = Get-Content $jsonFilePath -Raw
+                if ($jsonContent.Trim()) {
+                    $hashesHashtable = $jsonContent | ConvertFrom-Json -AsHashtable
+                }
+            } catch {
+                 Write-Warning "Could not parse $jsonFilePath. Re-initializing."
+                 $hashesHashtable = @{}
+            }
+        }
+        
+        $hashesHashtable[$branchName] = $latest_commit
+        
+        $hashesHashtable | ConvertTo-Json | Out-File -FilePath $jsonFilePath -Encoding UTF8 -Force
+        
+        git config --global user.name "github-actions"
+        git config --global user.email "github-actions@github.com"
+        git add $jsonFilePath
+        $current_date = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        git commit -m "Update latest commit hash for branch $branchName at $current_date"
+        git push
