@@ -69,15 +69,6 @@ jobs:
         $response = Invoke-RestMethod -Uri "https://www.googleapis.com/oauth2/v4/token" -Body $body -Method POST
         Write-Output "::add-mask::$($response.access_token)"
         Add-Content -Path $env:GITHUB_ENV -Value "ACCESS_TOKEN=$($response.access_token)"
-
-    - name: Restore Godot Cache
-      if: env.hashes_are_same == 'false'
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~\AppData\Roaming\Godot\
-          ~\AppData\Local\Godot\
-        key: godot-${{ env.GODOT_VERSION }}-windows
         
     - name: Setup Godot
       if: env.hashes_are_same == 'false'
@@ -118,7 +109,7 @@ jobs:
           name="ArtCrushV2.zip"
         } | ConvertTo-Json
         
-        $fileBytes = [System.IO.File]::ReadAllBytes("ArtCrushV2.zip");
+        $fileBytes = [System.IO.File]::ReadAllBytes("ArtCrushV2.zip")
         $body = @(
           "--boundary",
           "Content-Type: application/json; charset=UTF-8",
